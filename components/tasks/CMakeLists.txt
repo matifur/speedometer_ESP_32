@@ -1,0 +1,16 @@
+idf_component_register(
+    SRCS
+        "tasks.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        freertos
+        driver
+        encoder
+        hall_sensor
+        display
+        ble
+        uart
+        timer_utils
+        bike_metrics
+)

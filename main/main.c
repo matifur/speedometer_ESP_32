@@ -1,78 +1,108 @@
+/* =========================================================
+ *  main.c  –  punkt wejścia aplikacji
+ * =======================================================*/
 #include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+/* FreeRTOS */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+/* ESP-IDF */
+#include "esp_log.h"
+#include "nvs_flash.h"
+
+/* Sprzęt / sterowniki */
 #include "driver/gpio.h"
+#include "encoder.h"
 #include "sh1106.h"
+#include "ble_server.h"
+#include "encoder.h"
+#include "hall_sensor.h"
+#include "timer_utils.h"
+#include "bike_metrics.h"
+#include "uart.h"
 
-// --- Definicje pinów ---
-#define MAG_SENSOR_PIN    GPIO_NUM_2
-#define ENCODER_A_PIN     GPIO_NUM_3
-#define ENCODER_B_PIN     GPIO_NUM_4
-#define ENCODER_BTN_PIN   GPIO_NUM_5
+/* Wspólne kolejki + tasks */
+#include "tasks.h"
 
-// --- Zmienne enkodera ---
-volatile int encoder_dir = 0; // -1 = lewo, 1 = prawo, 0 = brak ruchu
-volatile int encoder_btn = 1;
+/* tag do logów */
+static const char *TAG = "MAIN";
 
-// --- ISR enkodera ---
-static void IRAM_ATTR encoder_isr_handler(void* arg)
+/* ------------ konfiguracja HW ----------------- */
+//timer
+#define HALL_TIMER_GROUP  TIMER_GROUP_0
+#define HALL_TIMER_IDX    TIMER_0
+
+
+#define ENCODER_PIN_A   GPIO_NUM_7
+#define ENCODER_PIN_B   GPIO_NUM_3
+#define ENCODER_BTN     GPIO_NUM_0
+
+#define HALL_GPIO       GPIO_NUM_6    /* czujnik HALLa */
+
+/* =========================================================
+ *  Inicjalizacja peryferiów
+ * =======================================================*/
+static void hw_init(void)
 {
-    int a = gpio_get_level(ENCODER_A_PIN);
-    int b = gpio_get_level(ENCODER_B_PIN);
+    /* 1. NVS (wymagane przez BLE) */
+    ESP_ERROR_CHECK(nvs_flash_init());
 
-    if (a != b)
-        encoder_dir = 1; // prawo
-    else
-        encoder_dir = -1; // lewo
+    /* 2. I²C + OLED SH1106 */
+    i2c_master_init();
+    sh1106_init();
+    task_sh1106_display_clear(NULL);
+
+    /* 3. Enkoder – ISR i własna kolejka wewnątrz drivera */
+    encoder_config_t cfg = {
+        .pin_a          = ENCODER_PIN_A,
+        .pin_b          = ENCODER_PIN_B,
+        .pin_btn        = ENCODER_BTN,
+        .flip_direction = false         /* ↺ / ↻ zgodnie z HW */
+    };
+    encoder_init(&cfg);
+
+    /* 4. Czujnik HALLa – tylko GPIO + ISR
+     *    (sam ISR kolejkuje pulse_dt_us do tasks_get_hall_q()) */
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << HALL_GPIO,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_NEGEDGE
+    };
+    ESP_ERROR_CHECK(gpio_config(&io));
+
+    /* 5. BLE  (jeżeli nie używasz – usuń) */
+    ble_server_init();
+
+    ESP_LOGI(TAG, "hardware initialised");
 }
 
-// --- ISR przycisku ---
-static void IRAM_ATTR button_isr_handler(void* arg)
-{
-    encoder_btn = gpio_get_level(ENCODER_BTN_PIN);
-}
-
-// --- Inicjalizacja GPIO ---
-void init_gpio()
-{
-    gpio_set_direction(MAG_SENSOR_PIN, GPIO_MODE_INPUT);
-    gpio_set_direction(ENCODER_A_PIN, GPIO_MODE_INPUT);
-    gpio_set_direction(ENCODER_B_PIN, GPIO_MODE_INPUT);
-    gpio_set_direction(ENCODER_BTN_PIN, GPIO_MODE_INPUT);
-
-    gpio_set_pull_mode(ENCODER_A_PIN, GPIO_PULLUP_ONLY);
-    gpio_set_pull_mode(ENCODER_B_PIN, GPIO_PULLUP_ONLY);
-    gpio_set_pull_mode(ENCODER_BTN_PIN, GPIO_PULLUP_ONLY);
-
-    gpio_install_isr_service(0);
-    gpio_isr_handler_add(ENCODER_A_PIN, encoder_isr_handler, NULL);
-    gpio_isr_handler_add(ENCODER_BTN_PIN, button_isr_handler, NULL);
-}
-
+/* =========================================================
+ *                 app_main()
+ * =======================================================*/
 void app_main(void)
 {
-    // Inicjalizacja
-    init_gpio();
-    i2c_master_init();   // z biblioteki SH1106
-    sh1106_init();
+    /* Sprzęt */
+    hw_init();
 
-    char line1[20];
-    char line2[20];
+    /* Kolejki */
+    tasks_init();
 
-    while (1)
+    /* Wystartuj zadania */
+    tasks_start();
+
+    /* -------- main loop --------
+     * Nie potrzebujemy tu nic robić – całe życie aplikacji
+     * toczy się w zadaniach; gdyby trzeba było dodać tryb
+     * uśpienia itp. można to zrobić tutaj. */
+    for (;;)
     {
-        int magnet = gpio_get_level(MAG_SENSOR_PIN);
-        int btn = gpio_get_level(ENCODER_BTN_PIN);
-        char* dir = (encoder_dir == 1) ? "P" : (encoder_dir == -1) ? "L" : "-";
-
-        snprintf(line1, sizeof(line1), "MAG: %d  BTN: %d", magnet, btn);
-        snprintf(line2, sizeof(line2), "ENC: %s", dir);
-
-        sh1106_clear_screen();
-        sh1106_display_text(line1, 0);
-        sh1106_display_text(line2, 1);
-        vTaskDelay(pdMS_TO_TICKS(200));
-
-        encoder_dir = 0; // reset kierunku
+        /* watchdog „żyje” dzięki innym zadaniom;
+           tu wystarczy długo spać.                */
+        vTaskDelay(pdMS_TO_TICKS(10 * 1000));
     }
 }

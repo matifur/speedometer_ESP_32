@@ -122,6 +122,39 @@ void task_sh1106_display_clear(void *ignore) {
     i2c_cmd_link_delete(cmd);
 }
 
+// void task_sh1106_display_clear(void *ignore) {
+//     i2c_cmd_handle_t cmd;
+//     uint8_t zero[128];
+//     memset(zero, 0x00, sizeof(zero));
+
+//     for (uint8_t page = 0; page < 8; page++) {
+//         cmd = i2c_cmd_link_create();
+//         i2c_master_start(cmd);
+
+//         // Adres urządzenia
+//         i2c_master_write_byte(cmd, (OLED_I2C_ADDRESS << 1) | I2C_MASTER_WRITE, true);
+
+//         // Tryb komend
+//         i2c_master_write_byte(cmd, OLED_CONTROL_BYTE_CMD_STREAM, true);
+
+//         // Ustawienie strony (page)
+//         i2c_master_write_byte(cmd, 0xB0 | page, true);
+
+//         // Reset kolumn (lower + upper nibble)
+//         i2c_master_write_byte(cmd, 0x00, true);  // lower col addr = 0
+//         i2c_master_write_byte(cmd, 0x10, true);  // upper col addr = 0
+
+//         // Tryb danych
+//         i2c_master_write_byte(cmd, OLED_CONTROL_BYTE_DATA_STREAM, true);
+
+//         // Wysłanie 128 bajtów zera
+//         i2c_master_write(cmd, zero, 128, true);
+
+//         i2c_master_stop(cmd);
+//         i2c_master_cmd_begin(I2C_NUM_0, cmd, 10 / portTICK_PERIOD_MS);
+//         i2c_cmd_link_delete(cmd);
+//     }
+// }
 
 void task_sh1106_contrast(void *ignore) {
 	i2c_cmd_handle_t cmd;
@@ -198,15 +231,53 @@ void task_sh1106_display_text(const void *arg_text) {
 	}
 }
 
-
-void app_main(void)
+void task_sh1106_display_fixed_text(void *arg_text)
 {
-	i2c_master_init();
-	sh1106_init();
+    const char *text = "Hello!\nMultiline OK!\nAnother line.";
+    const uint8_t text_len = strlen(text);
 
-	task_sh1106_display_pattern(NULL);
-	vTaskDelay(1000/portTICK_PERIOD_MS);
-	task_sh1106_display_clear(NULL);
-    task_sh1106_display_text("Hello!\nMultiline OK!\nAnother line.");
-	xTaskCreate(&task_sh1106_contrast, "ssid1306_contrast", 2048, NULL, 6, NULL);
+    for (;;) {                              // ← pętla „na zawsze”
+        uint8_t cur_page = 0;
+
+        /* reset kolumny + strony */
+        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_master_start(cmd);
+        i2c_master_write_byte(cmd, (OLED_I2C_ADDRESS << 1) | I2C_MASTER_WRITE, true);
+        i2c_master_write_byte(cmd, OLED_CONTROL_BYTE_CMD_STREAM, true);
+        i2c_master_write_byte(cmd, 0x08, true);
+        i2c_master_write_byte(cmd, 0x10, true);
+        i2c_master_write_byte(cmd, 0xB0 | cur_page, true);
+        i2c_master_stop(cmd);
+        i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(10));
+        i2c_cmd_link_delete(cmd);
+
+        /* wypisz tekst */
+        for (uint8_t i = 0; i < text_len; i++) {
+            if (text[i] == '\n') {
+                cmd = i2c_cmd_link_create();
+                i2c_master_start(cmd);
+                i2c_master_write_byte(cmd, (OLED_I2C_ADDRESS << 1) | I2C_MASTER_WRITE, true);
+                i2c_master_write_byte(cmd, OLED_CONTROL_BYTE_CMD_STREAM, true);
+                i2c_master_write_byte(cmd, 0x08, true);
+                i2c_master_write_byte(cmd, 0x10, true);
+                i2c_master_write_byte(cmd, 0xB0 | ++cur_page, true);
+                i2c_master_stop(cmd);
+                i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(10));
+                i2c_cmd_link_delete(cmd);
+            } else {
+                cmd = i2c_cmd_link_create();
+                i2c_master_start(cmd);
+                i2c_master_write_byte(cmd, (OLED_I2C_ADDRESS << 1) | I2C_MASTER_WRITE, true);
+                i2c_master_write_byte(cmd, OLED_CONTROL_BYTE_DATA_STREAM, true);
+                i2c_master_write(cmd,
+                                 font8x8_basic_tr[(uint8_t)text[i]], 8, true);
+                i2c_master_stop(cmd);
+                i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(10));
+                i2c_cmd_link_delete(cmd);
+            }
+        }
+
+        /* odczekaj, zrób kolejne odświeżenie, itp. */
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }

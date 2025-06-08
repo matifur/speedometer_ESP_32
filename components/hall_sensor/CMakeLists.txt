@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "hall_sensor.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        driver
+        uart
+        timer_utils
+        bike_metrics
+)
